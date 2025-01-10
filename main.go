@@ -240,8 +240,10 @@ func subscribeAndListen() error {
 					}
 
 					// add the address to the NAT table
-					if err := table.ProgramRule(iptables.Nat, "POSTROUTING", iptables.Insert, []string{"-s", dockerAddresses[i], "-j", "SNAT", "--to-source", interfaceAddress}); err != nil {
-						return fmt.Errorf("failed to add snat rule for %s: %w", dockerAddresses[i], err)
+					for _, s := range targetSubnets {
+						if err := table.ProgramRule(iptables.Nat, "POSTROUTING", iptables.Insert, []string{"-s", dockerAddresses[i], "-d", s, "-j", "SNAT", "--to-source", interfaceAddress}); err != nil {
+							return fmt.Errorf("failed to add snat rule for %s: %w", dockerAddresses[i], err)
+						}
 					}
 				}
 				if err := netlink.LinkSetUp(link); err != nil {
