@@ -101,6 +101,7 @@ func subscribeAndListen() error {
 		if err != nil {
 			return fmt.Errorf("failed to convert NUM_INTERFACES to int: %w", err)
 		}
+		targetSubnets := strings.Split(os.Getenv("TARGET_SUBNETS"), ",")
 
 		// setup
 		table := iptables.GetIptable(iptables.IPv4)
@@ -160,7 +161,9 @@ func subscribeAndListen() error {
 				for _, addr := range addrs {
 					// brute force delete the address from all interfaces
 					for _, dockerAddress := range dockerAddresses {
-						table.ProgramRule(iptables.Nat, "POSTROUTING", iptables.Delete, []string{"-s", dockerAddress, "-j snat --to-source", addr.IP.String()})
+						for _, s := range targetSubnets {
+							table.ProgramRule(iptables.Nat, "POSTROUTING", iptables.Delete, []string{"-s", dockerAddress, "-d", s, "-j snat --to-source", addr.IP.String()})
+						}
 					}
 					if err := netlink.AddrDel(link, &addr); err != nil {
 						return fmt.Errorf("failed to delete address: %w", err)
