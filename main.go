@@ -97,7 +97,7 @@ func subscribeAndListen() error {
 			slog.Info("round_finished event received, changing interfaces")
 		}
 
-		numInterfaces, err := strconv.Atoi(os.Getenv("NUM_INTERFACES"))
+		numIPs, err := strconv.Atoi(os.Getenv("NUM_IPS"))
 		if err != nil {
 			return fmt.Errorf("failed to convert NUM_INTERFACES to int: %w", err)
 		}
@@ -207,7 +207,7 @@ func subscribeAndListen() error {
 
 		for _, iface := range interfaces {
 			if strings.HasPrefix(iface.Name, InterfaceNamePrefix) {
-				slog.Info("setting up routing", "name", iface.Name, "addresses", numInterfaces)
+				slog.Info("setting up routing", "name", iface.Name, "addresses", numIPs)
 				// set link down before changing the address
 				// set the address
 				link, err := netlink.LinkByName(iface.Name)
@@ -217,7 +217,7 @@ func subscribeAndListen() error {
 				if err := netlink.LinkSetDown(link); err != nil {
 					return fmt.Errorf("failed to set link down: %w", err)
 				}
-				for i := 0; i < numInterfaces; i++ {
+				for i := 0; i < numIPs; i++ {
 					interfaceAddress, err := getUnusedAddress(os.Getenv("DESIRED_SUBNET"))
 					if err != nil {
 						return fmt.Errorf("failed to get unused address: %w", err)

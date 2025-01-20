@@ -6,6 +6,6 @@ Configuration is done through the .env file. The following variables are require
 
 - `REDIS_ADDR`: The address of the Quotient Redis server
 - `REDIS_PASSWORD`: The password for the Quotient Redis server
-- `NUM_INTERFACES`: The number of interfaces to create, usually equal to the number of Quotient Runners
-- `DESIRED_SUBNET`: The subnet to use for the new interfaces
-- `TARGET_SUBNETS`: A comma-separated list of subnets that will use the new interfaces
+- `NUM_IPS`: The number of IPs to create, usually equal to the number of Quotient Runners
+- `DESIRED_SUBNET`: The subnet to use for the new interface
+- `TARGET_SUBNETS`: A comma-separated list of subnets that will use the new interface
