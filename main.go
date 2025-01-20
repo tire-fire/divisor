@@ -158,13 +158,30 @@ func subscribeAndListen() error {
 					return fmt.Errorf("failed to get address list: %w", err)
 				}
 
-				for _, addr := range addrs {
-					// brute force delete the address from all interfaces
-					for _, dockerAddress := range dockerAddresses {
-						for _, s := range targetSubnets {
-							table.ProgramRule(iptables.Nat, "POSTROUTING", iptables.Delete, []string{"-s", dockerAddress, "-d", s, "-j snat --to-source", addr.IP.String()})
+				// List all rules in the chain
+				output, err := table.Raw("-t", "nat", "-S", "POSTROUTING")
+				if err != nil {
+					return fmt.Errorf("error listing rules: %v", err)
+				}
+
+				// Split the output into individual rules
+				rules := strings.Split(string(output), "\n")
+
+				// Iterate through rules and delete SNAT ones
+				for _, rule := range rules {
+					if strings.Contains(rule, "-j SNAT") {
+						// Convert the rule to a format suitable for deletion
+						deleteRule := "-t nat " + strings.Replace(rule, "-A", "-D", 1)
+
+						_, err := table.Raw(strings.Fields(deleteRule)...)
+						if err != nil {
+							fmt.Printf("Error deleting rule: %v\n", err)
 						}
 					}
+				}
+
+				for _, addr := range addrs {
+					// brute force delete the address from all interfaces
 					if err := netlink.AddrDel(link, &addr); err != nil {
 						return fmt.Errorf("failed to delete address: %w", err)
 					}
