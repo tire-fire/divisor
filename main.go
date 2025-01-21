@@ -84,8 +84,8 @@ func subscribeAndListen() error {
 	for msg := range eventsChannel {
 		slog.Info("Received message", "message", msg.String())
 
-		if msg.Payload == "round_finished" {
-			slog.Info("round_finished event received, reconfiguring interface")
+		if msg.Payload == "round_finish" {
+			slog.Info("round_finish event received, reconfiguring interface")
 		} else {
 			continue
 		}
