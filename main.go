@@ -233,7 +233,7 @@ func configureNATRules(addresses []string, dockerAddresses, targetSubnets []stri
 	for _, dockerIP := range dockerAddresses {
 		for _, subnet := range targetSubnets {
 			ip := addresses[rng.Intn(len(addresses))]
-			err := table.ProgramRule(iptables.Nat, "POSTROUTING", iptables.Insert, []string{"-s", dockerIP, "-d", subnet, "-j", "SNAT", "--to-source", ip})
+			err := table.ProgramRule(iptables.Nat, "POSTROUTING", iptables.Insert, []string{"-s", dockerIP, "-d", subnet, "-j", "SNAT", "--to-source", ip, "--random-fully"})
 			if err != nil {
 				return fmt.Errorf("failed to add SNAT rule for Docker IP %s and subnet %s: %w", dockerIP, subnet, err)
 			}
