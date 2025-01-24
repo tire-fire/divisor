@@ -117,27 +117,26 @@ func connectToRedis() (*redis.Client, error) {
 }
 
 func handleNetworkReconfiguration() error {
-	singleIP, err := getUnusedAddress(os.Getenv("DESIRED_SUBNET"))
+	numIPs, err := strconv.Atoi(os.Getenv("NUM_IPS"))
 	if err != nil {
-		return fmt.Errorf("failed to get unused address: %w", err)
+		return fmt.Errorf("failed to convert NUM_IPS to int: %w", err)
 	}
-	slog.Debug("Chosen single IP for all runners", "ip", singleIP)
 
 	// Configure divisor interface with the chosen IP
-	if err := configureDivisorInterface(singleIP); err != nil {
+	addresses, err := configureDivisorInterface(numIPs)
+	if err != nil {
 		return fmt.Errorf("failed to configure divisor interface: %w", err)
 	}
 
 	// Configure NAT rules for the selected IP
 	targetSubnets := strings.Split(os.Getenv("TARGET_SUBNETS"), ",")
-	table := iptables.GetIptable(iptables.IPv4)
 
 	dockerAddresses, err := getDockerContainerAddresses()
 	if err != nil {
 		return fmt.Errorf("failed to get Docker container addresses: %w", err)
 	}
 
-	if err := configureNATRules(table, singleIP, dockerAddresses, targetSubnets); err != nil {
+	if err := configureNATRules(addresses, dockerAddresses, targetSubnets); err != nil {
 		return fmt.Errorf("failed to configure NAT rules: %w", err)
 	}
 
@@ -145,7 +144,8 @@ func handleNetworkReconfiguration() error {
 	return nil
 }
 
-func configureDivisorInterface(ip string) error {
+// configureDivisorInterface configures the divisor interface with the number of IPs specified
+func configureDivisorInterface(numIPs int) ([]string, error) {
 	iface := &netlink.Dummy{
 		LinkAttrs: netlink.LinkAttrs{
 			Name: InterfaceNamePrefix,
@@ -154,51 +154,64 @@ func configureDivisorInterface(ip string) error {
 
 	// Add the interface if it doesn't exist
 	if err := netlink.LinkAdd(iface); err != nil && !os.IsExist(err) {
-		return fmt.Errorf("failed to add link: %w", err)
+		return nil, fmt.Errorf("failed to add link: %w", err)
 	}
 
 	link, err := netlink.LinkByName(InterfaceNamePrefix)
 	if err != nil {
-		return fmt.Errorf("failed to get link %s by name: %w", InterfaceNamePrefix, err)
+		return nil, fmt.Errorf("failed to get link %s by name: %w", InterfaceNamePrefix, err)
 	}
 
 	// Remove any existing addresses
 	addrs, err := netlink.AddrList(link, netlink.FAMILY_V4)
 	if err != nil {
-		return fmt.Errorf("failed to list addresses: %w", err)
+		return nil, fmt.Errorf("failed to list addresses: %w", err)
 	}
 	for _, addr := range addrs {
 		if err := netlink.AddrDel(link, &addr); err != nil {
-			return fmt.Errorf("failed to delete address: %w", err)
+			return nil, fmt.Errorf("failed to delete address: %w", err)
 		}
 	}
 
-	// Assign the new IP address
-	subnet := strings.Split(os.Getenv("DESIRED_SUBNET"), "/")[1]
-	mask, err := strconv.Atoi(subnet)
-	if err != nil {
-		return fmt.Errorf("failed to convert subnet to int: %w", err)
-	}
-	ipNet := &net.IPNet{
-		IP:   net.ParseIP(ip),
-		Mask: net.CIDRMask(mask, 32),
-	}
+	var addresses []string
+	// Find and assign new IP addresses
+	for i := 0; i < numIPs; i++ {
+		ipAddr, err := getUnusedAddress(os.Getenv("DESIRED_SUBNET"))
+		if err != nil {
+			return nil, fmt.Errorf("failed to get unused address: %w", err)
+		}
+		slog.Debug("Chosen IP for all runners", "ip", ipAddr)
 
-	if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: ipNet}); err != nil {
-		return fmt.Errorf("failed to add address: %w", err)
+		// Assign the new IP address
+		subnet := strings.Split(os.Getenv("DESIRED_SUBNET"), "/")[1]
+		mask, err := strconv.Atoi(subnet)
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert subnet to int: %w", err)
+		}
+		newIP := &net.IPNet{
+			IP:   net.ParseIP(ipAddr),
+			Mask: net.CIDRMask(mask, 32),
+		}
+
+		if err := netlink.AddrAdd(link, &netlink.Addr{IPNet: newIP}); err != nil {
+			return nil, fmt.Errorf("failed to add address: %w", err)
+		}
+
+		slog.Info("Configured divisor interface", "ip", ipAddr)
+		addresses = append(addresses, ipAddr)
 	}
 
 	// Bring the interface up
 	if err := netlink.LinkSetUp(link); err != nil {
-		return fmt.Errorf("failed to set link up: %w", err)
+		return nil, fmt.Errorf("failed to set link up: %w", err)
 	}
 
-	slog.Info("Configured divisor interface", "ip", ip)
-	return nil
+	return addresses, nil
 }
 
-func configureNATRules(table *iptables.IPTable, ip string, dockerAddresses, targetSubnets []string) error {
+func configureNATRules(addresses []string, dockerAddresses, targetSubnets []string) error {
 	// Clear existing SNAT rules
+	table := iptables.GetIptable(iptables.IPv4)
 	output, err := table.Raw("-t", "nat", "-S", "POSTROUTING")
 	if err != nil {
 		return fmt.Errorf("failed to list rules: %w", err)
@@ -215,16 +228,20 @@ func configureNATRules(table *iptables.IPTable, ip string, dockerAddresses, targ
 	}
 
 	// Add new SNAT rules for each target subnet and Docker address
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+
 	for _, dockerIP := range dockerAddresses {
 		for _, subnet := range targetSubnets {
-			err := table.ProgramRule(iptables.Nat, "POSTROUTING", iptables.Insert, []string{"-s", dockerIP, "-d", subnet, "-j", "SNAT", "--to-source", ip})
+			ip := addresses[rng.Intn(len(addresses))]
+			err := table.ProgramRule(iptables.Nat, "POSTROUTING", iptables.Insert, []string{"-s", dockerIP, "-d", subnet, "-j", "SNAT", "--to-source", ip, "--random-fully"})
 			if err != nil {
 				return fmt.Errorf("failed to add SNAT rule for Docker IP %s and subnet %s: %w", dockerIP, subnet, err)
 			}
+			slog.Debug("Added SNAT rule", "dockerIP", dockerIP, "subnet", subnet, "ip", ip)
 		}
 	}
 
-	slog.Info("Configured NAT rules", "ip", ip)
+	slog.Info("Configured NAT rules", "num_rules", len(addresses))
 	return nil
 }
 
