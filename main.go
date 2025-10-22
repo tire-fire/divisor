@@ -23,8 +23,8 @@ import (
 )
 
 const (
-	// InterfaceNamePrefix is the prefix for the interfaces created by Divisor
-	InterfaceNamePrefix = "divisor"
+	// DefaultInterfaceName is the default name for the interface used by Divisor
+	DefaultInterfaceName = "divisor"
 )
 
 var logLvels = map[string]slog.Level{
@@ -146,20 +146,29 @@ func handleNetworkReconfiguration() error {
 
 // configureDivisorInterface configures the divisor interface with the number of IPs specified
 func configureDivisorInterface(numIPs int) ([]string, error) {
-	iface := &netlink.Dummy{
-		LinkAttrs: netlink.LinkAttrs{
-			Name: InterfaceNamePrefix,
-		},
+	interfaceName := os.Getenv("INTERFACE_NAME")
+	if interfaceName == "" {
+		interfaceName = DefaultInterfaceName
 	}
 
-	// Add the interface if it doesn't exist
-	if err := netlink.LinkAdd(iface); err != nil && !os.IsExist(err) {
-		return nil, fmt.Errorf("failed to add link: %w", err)
-	}
-
-	link, err := netlink.LinkByName(InterfaceNamePrefix)
+	// Check if the interface already exists
+	link, err := netlink.LinkByName(interfaceName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get link %s by name: %w", InterfaceNamePrefix, err)
+		// Interface doesn't exist, create a dummy interface
+		iface := &netlink.Dummy{
+			LinkAttrs: netlink.LinkAttrs{
+				Name: interfaceName,
+			},
+		}
+
+		if err := netlink.LinkAdd(iface); err != nil {
+			return nil, fmt.Errorf("failed to add link: %w", err)
+		}
+
+		link, err = netlink.LinkByName(interfaceName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get link %s by name: %w", interfaceName, err)
+		}
 	}
 
 	// Remove any existing addresses
