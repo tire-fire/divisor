@@ -147,20 +147,12 @@ func handleNetworkReconfiguration() error {
 // configureDivisorInterface configures the divisor interface with the number of IPs specified
 func configureDivisorInterface(numIPs int) ([]string, error) {
 	interfaceName := os.Getenv("INTERFACE_NAME")
-	slog.Debug("Reading INTERFACE_NAME from environment", "value", interfaceName)
 	if interfaceName == "" {
 		interfaceName = DefaultInterfaceName
-		slog.Debug("INTERFACE_NAME empty, using default", "default", DefaultInterfaceName)
 	}
 
 	// Check if the interface already exists
 	link, err := netlink.LinkByName(interfaceName)
-	if err != nil {
-		slog.Debug("Interface not found, will create dummy", "interface", interfaceName, "error", err)
-	} else {
-		slog.Debug("Interface found, will use existing", "interface", interfaceName)
-	}
-	link, err = netlink.LinkByName(interfaceName)
 	if err != nil {
 		// Interface doesn't exist, create a dummy interface
 		iface := &netlink.Dummy{
