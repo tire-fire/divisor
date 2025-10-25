@@ -77,6 +77,12 @@ func subscribeAndListen() error {
 	}
 	slog.Debug("Connected to Redis")
 
+	// Configure network on startup
+	slog.Info("Configuring network on startup")
+	if err := handleNetworkReconfiguration(); err != nil {
+		slog.Error("Failed to configure network on startup", "error", err)
+	}
+
 	events := redisClient.Subscribe(context.Background(), "events")
 	defer events.Close()
 	eventsChannel := events.Channel()
@@ -267,7 +273,7 @@ func getDockerContainerAddresses() ([]string, error) {
 
 	dockerAddresses := []string{}
 	for _, container := range containers {
-		if !strings.Contains(container.Names[0], "quotient-runner-") {
+		if !strings.Contains(container.Names[0], "quotient-runner-") && !strings.Contains(container.Names[0], "quotient_runner_") {
 			continue
 		}
 
