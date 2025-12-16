@@ -9,3 +9,4 @@ Configuration is done through the .env file. The following variables are require
 - `NUM_IPS`: The number of IPs to create, usually equal to the number of Quotient Runners
 - `DESIRED_SUBNET`: The subnet to use for the new interface
 - `TARGET_SUBNETS`: A comma-separated list of subnets that will use the new interface
+- `INTERFACE_NAME`: The name of the interface that Divisor will maintain
