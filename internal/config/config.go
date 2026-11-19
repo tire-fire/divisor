@@ -47,6 +47,9 @@ const (
 	EnvNATSURL = "NATS_URL"
 	// EnvNATSRoundClosedSubject is the environment variable for the round-closed subject.
 	EnvNATSRoundClosedSubject = "NATS_ROUND_CLOSED_SUBJECT"
+	// EnvSynShape turns on SYN shaping ("on"): runner packets marked with a
+	// profile's DSCP leave with that OS's TTL and SYN options.
+	EnvSynShape = "SYN_SHAPE"
 
 	// ModeSNAT is the default mode of operation, SNATting runner containers from the host.
 	ModeSNAT = "snat"
@@ -75,6 +78,7 @@ type Config struct {
 	Backend             string
 	NATSURL             string
 	NATSSubject         string
+	SynShape            bool
 }
 
 // Load reads the current environment. It does not validate the mode.
@@ -108,6 +112,7 @@ func Load() Config {
 		Backend:             backend,
 		NATSURL:             natsURL,
 		NATSSubject:         natsSubject,
+		SynShape:            os.Getenv(EnvSynShape) == "on",
 	}
 }
 

@@ -95,6 +95,7 @@ CONTAINER_PREFIX=quotient-runner
 | `QUOTIENT_BACKEND` | No | `redis` | Event source: `redis` or `nats` |
 | `NATS_URL` | No | `nats://localhost:4222` | Core NATS server URL, used when `QUOTIENT_BACKEND=nats` |
 | `NATS_ROUND_CLOSED_SUBJECT` | No | `scoring.rounds.closed` | Subject that carries one closed-round message |
+| `SYN_SHAPE` | No | - | `on`: make each runner connection's TTL and SYN match the OS the check claims, see [SYN shaping](#syn-shaping) |
 ### Variable Details
 
 #### REDIS_ADDR
@@ -199,6 +200,7 @@ Each message on this subject is one closed round. The payload is JSON:
 - `ippool` chooses addresses from `DESIRED_SUBNET`
 - `network` rotates the interface and installs SNAT rules or direct-mode routes
 - `events` subscribes to Redis `round_finish` or a NATS round-closed subject. Both call the same reconfiguration function.
+- `shape` installs the SYN-shaping table and NFQUEUE listeners (`SYN_SHAPE=on`); `cmd/synshape` runs only that, for testing
 
 Build with `go build -o divisor ./cmd/divisor`.
 
@@ -291,6 +293,20 @@ To run Quotient without IP rotation, comment out or remove the divisor service f
 With `DIVISOR_MODE=direct`, Divisor expects to run in a runner's network namespace and sets the address directly on `INTERFACE_NAME`. Each runner must have its own divisor attached. Use this mode if you want to run on Kubernetes, or otherwise don't want to use the SNAT mode.
 
 Requires `net.ipv4.conf.<INTERFACE_NAME>.promote_secondaries=1`. Divisor needs an IP to ping from when ensuring an address is unused, and in direct mode there's no existing IP to rely on other than the previously used scoring IP, so we add the new IP before removing the old one.
+
+### SYN Shaping
+
+With `SYN_SHAPE=on`, the packets a check sends leave with the TCP/IP fingerprint of the operating system the check claims (its User-Agent, workstation name or client banner), not the runner's Linux one. The runner marks each socket with a DSCP value per OS when `QUOTIENT_PROFILE_MARK=dscp` is set on it: 7 Windows, 11 Linux, 15 macOS. **Set that only on runners behind a Divisor with `SYN_SHAPE=on`**, or the marks reach the teams.
+
+Divisor's `divisor_shape` nftables table (postrouting, before SNAT), for traffic to `TARGET_SUBNETS`:
+- clears the DSCP and sets the OS's TTL (128 Windows, 64 Linux and macOS) on every packet of the flow, also on packets the runner kernel sends without the socket (via the conntrack mark);
+- sends SYNs of the Windows and macOS profiles to an NFQUEUE listener that rewrites the SYN's options into the OS's layout (Windows: `mss,nop,ws,nop,nop,sackOK`, no timestamps). Without timestamps in the SYN the server answers without them, and the client runs the whole flow without timestamps. The window scale is only ever lowered. Nothing after the SYN is rewritten, so there is no per-flow state in Divisor.
+
+In SNAT mode Divisor also raises `net.ipv4.tcp_rmem`'s maximum to 16 MiB inside each runner container's network namespace (not on the host), so the runner's own window scale is at least the OS's (8 for Windows) and never has to be raised. In direct mode Divisor shares the runner's namespace and tries the same; with a read-only `/proc/sys` Windows SYNs keep the runner's scale.
+
+Failure behaviour: if the listener is not running or its queue is full, SYNs pass unmodified (`queue ... bypass`, fail-open). Connections still work; the runner's own fingerprint shows. Address rotation does not touch the table: it matches the DSCP mark, not addresses.
+
+Needs `nft` in the image and the `nfnetlink_queue` kernel module.
 
 ---
 

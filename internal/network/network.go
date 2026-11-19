@@ -20,6 +20,7 @@ import (
 
 	"divisor/internal/config"
 	"divisor/internal/ippool"
+	"divisor/internal/shape"
 )
 
 // DirectModeReady reports whether promote_secondaries is set for all
@@ -71,9 +72,20 @@ func Reconfigure() error {
 	}
 
 	// Configure NAT rules for the selected IP
-	dockerAddresses, err := getDockerContainerAddresses(cfg)
+	dockerAddresses, runnerPIDs, err := getDockerContainerAddresses(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to get Docker container addresses: %w", err)
+	}
+	if cfg.SynShape {
+		// Give each runner's network namespace a tcp_rmem max that lets its
+		// sockets announce the claimed OS's window scale, so SYN shaping
+		// never has to raise one. Idempotent; new runners get it on the
+		// next rotation.
+		for _, pid := range runnerPIDs {
+			if err := shape.EnsureRcvBufMax(pid, shape.RcvBufMax); err != nil {
+				slog.Warn("Failed to raise tcp_rmem in runner namespace", "pid", pid, "error", err)
+			}
+		}
 	}
 
 	if err := configureNATRules(addresses, dockerAddresses, targetSubnets); err != nil {
@@ -296,20 +308,23 @@ func parseRouteDestinations(targetSubnets []string) ([]*net.IPNet, error) {
 	return destinations, nil
 }
 
-func getDockerContainerAddresses(cfg config.Config) ([]string, error) {
+// getDockerContainerAddresses returns the runner containers' addresses and
+// the PIDs of their init processes (for their network namespaces).
+func getDockerContainerAddresses(cfg config.Config) ([]string, []int, error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
-		return nil, fmt.Errorf("failed to create Docker client: %w", err)
+		return nil, nil, fmt.Errorf("failed to create Docker client: %w", err)
 	}
 
 	containers, err := cli.ContainerList(context.Background(), container.ListOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to list Docker containers: %w", err)
+		return nil, nil, fmt.Errorf("failed to list Docker containers: %w", err)
 	}
 
 	containerPrefix := cfg.ContainerPrefixOrDefault()
 
 	dockerAddresses := []string{}
+	var pids []int
 	for _, container := range containers {
 		if !strings.Contains(container.Names[0], containerPrefix) {
 			continue
@@ -323,7 +338,10 @@ func getDockerContainerAddresses(cfg config.Config) ([]string, error) {
 		for _, network := range containerDetails.NetworkSettings.Networks {
 			dockerAddresses = append(dockerAddresses, network.IPAddress)
 		}
+		if containerDetails.State != nil && containerDetails.State.Pid > 0 {
+			pids = append(pids, containerDetails.State.Pid)
+		}
 	}
 
-	return dockerAddresses, nil
+	return dockerAddresses, pids, nil
 }
