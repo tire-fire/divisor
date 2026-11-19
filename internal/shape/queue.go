@@ -49,16 +49,21 @@ func Listen(ctx context.Context, stats *Stats) error {
 func listenProfile(ctx context.Context, p Profile, stats *Stats) (*nfqueue.Nfqueue, error) {
 	q, err := nfqueue.Open(&nfqueue.Config{
 		NfQueue:      p.Queue,
-		MaxPacketLen: 0xffff,
-		MaxQueueLen:  4096,
+		MaxPacketLen: 256, // a SYN is at most 60 (IPv4) + 60 (TCP) bytes
+		MaxQueueLen:  65536,
 		Copymode:     nfqueue.NfQnlCopyPacket,
 		Flags:        nfqueue.NfQaCfgFlagFailOpen,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("open NFQUEUE %d (%s): %w", p.Queue, p.Name, err)
 	}
-	// Don't stop on ENOBUFS when the socket buffer overflows: the kernel
-	// fails open for what didn't fit.
+	// A burst of SYNs (every check of a round at once) must fit in the
+	// socket buffer, or the kernel fails those SYNs open (unmodified). The
+	// size is capped by net.core.rmem_max. Don't stop on ENOBUFS when it
+	// still overflows.
+	if err := q.Con.SetReadBuffer(16 << 20); err != nil {
+		slog.Warn("NFQUEUE socket buffer", "queue", p.Queue, "error", err)
+	}
 	_ = q.SetOption(netlink.NoENOBUFS, true)
 
 	hook := func(a nfqueue.Attribute) int {
