@@ -6,7 +6,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -47,6 +49,17 @@ const (
 	EnvNATSURL = "NATS_URL"
 	// EnvNATSRoundClosedSubject is the environment variable for the round-closed subject.
 	EnvNATSRoundClosedSubject = "NATS_ROUND_CLOSED_SUBJECT"
+	// EnvSynShape turns on SYN shaping ("on"): runner packets marked with a
+	// profile's DSCP leave with that OS's TTL and SYN options.
+	EnvSynShape = "SYN_SHAPE"
+	// EnvShapeExtraHops is added to each profile's TTL: the routers between
+	// Divisor and where a real host of that OS would sit.
+	EnvShapeExtraHops = "SHAPE_EXTRA_HOPS"
+	// EnvShapeWatchdogThreshold is how long the shaping queues may stay
+	// non-empty before the watchdog bypasses shaping.
+	EnvShapeWatchdogThreshold = "SHAPE_WATCHDOG_THRESHOLD"
+	// DefaultShapeWatchdogThreshold is the default for EnvShapeWatchdogThreshold.
+	DefaultShapeWatchdogThreshold = 500 * time.Millisecond
 
 	// ModeSNAT is the default mode of operation, SNATting runner containers from the host.
 	ModeSNAT = "snat"
@@ -63,18 +76,21 @@ const (
 // InterfaceName and ContainerPrefix are not defaulted here: an empty
 // interface name must still reach the promote_secondaries sysctl path.
 type Config struct {
-	Mode                string
-	RedisAddr           string
-	RedisPassword       string
-	NumIPs              string
-	TargetSubnets       string
-	InterfaceName       string
-	DesiredSubnets      string
-	ContainerPrefix     string
-	TargetSubnetGateway string
-	Backend             string
-	NATSURL             string
-	NATSSubject         string
+	Mode                   string
+	RedisAddr              string
+	RedisPassword          string
+	NumIPs                 string
+	TargetSubnets          string
+	InterfaceName          string
+	DesiredSubnets         string
+	ContainerPrefix        string
+	TargetSubnetGateway    string
+	Backend                string
+	NATSURL                string
+	NATSSubject            string
+	SynShape               bool
+	ShapeExtraHops         string
+	ShapeWatchdogThreshold string
 }
 
 // Load reads the current environment. It does not validate the mode.
@@ -96,18 +112,21 @@ func Load() Config {
 		natsSubject = DefaultNATSSubject
 	}
 	return Config{
-		Mode:                os.Getenv(EnvMode),
-		RedisAddr:           redisAddr,
-		RedisPassword:       os.Getenv(EnvRedisPassword),
-		NumIPs:              os.Getenv(EnvNumIPs),
-		TargetSubnets:       os.Getenv(EnvTargetSubnets),
-		InterfaceName:       os.Getenv(EnvInterfaceName),
-		DesiredSubnets:      desiredSubnets(),
-		ContainerPrefix:     os.Getenv(EnvContainerPrefix),
-		TargetSubnetGateway: os.Getenv(EnvTargetSubnetGateway),
-		Backend:             backend,
-		NATSURL:             natsURL,
-		NATSSubject:         natsSubject,
+		Mode:                   os.Getenv(EnvMode),
+		RedisAddr:              redisAddr,
+		RedisPassword:          os.Getenv(EnvRedisPassword),
+		NumIPs:                 os.Getenv(EnvNumIPs),
+		TargetSubnets:          os.Getenv(EnvTargetSubnets),
+		InterfaceName:          os.Getenv(EnvInterfaceName),
+		DesiredSubnets:         desiredSubnets(),
+		ContainerPrefix:        os.Getenv(EnvContainerPrefix),
+		TargetSubnetGateway:    os.Getenv(EnvTargetSubnetGateway),
+		Backend:                backend,
+		NATSURL:                natsURL,
+		NATSSubject:            natsSubject,
+		SynShape:               os.Getenv(EnvSynShape) == "on",
+		ShapeExtraHops:         os.Getenv(EnvShapeExtraHops),
+		ShapeWatchdogThreshold: os.Getenv(EnvShapeWatchdogThreshold),
 	}
 }
 
@@ -144,6 +163,30 @@ func (c Config) ContainerPrefixOrDefault() string {
 		return DefaultContainerPrefix
 	}
 	return c.ContainerPrefix
+}
+
+// ShapeExtraHopsOrDefault parses SHAPE_EXTRA_HOPS (default 0, at most 64).
+func (c Config) ShapeExtraHopsOrDefault() (int, error) {
+	if c.ShapeExtraHops == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(c.ShapeExtraHops)
+	if err != nil || n < 0 || n > 64 {
+		return 0, fmt.Errorf("Invalid %s %q: must be 0 to 64", EnvShapeExtraHops, c.ShapeExtraHops)
+	}
+	return n, nil
+}
+
+// ShapeWatchdogThresholdOrDefault parses SHAPE_WATCHDOG_THRESHOLD (a Go duration).
+func (c Config) ShapeWatchdogThresholdOrDefault() (time.Duration, error) {
+	if c.ShapeWatchdogThreshold == "" {
+		return DefaultShapeWatchdogThreshold, nil
+	}
+	d, err := time.ParseDuration(c.ShapeWatchdogThreshold)
+	if err != nil || d <= 0 {
+		return 0, fmt.Errorf("Invalid %s %q: must be a positive duration", EnvShapeWatchdogThreshold, c.ShapeWatchdogThreshold)
+	}
+	return d, nil
 }
 
 func desiredSubnets() string {

@@ -95,6 +95,7 @@ CONTAINER_PREFIX=quotient-runner
 | `QUOTIENT_BACKEND` | No | `redis` | Event source: `redis` or `nats` |
 | `NATS_URL` | No | `nats://localhost:4222` | Core NATS server URL, used when `QUOTIENT_BACKEND=nats` |
 | `NATS_ROUND_CLOSED_SUBJECT` | No | `scoring.rounds.closed` | Subject that carries one closed-round message |
+| `SYN_SHAPE` | No | - | `on`: make each runner connection's TTL and SYN match the OS the check claims, see [SYN shaping](#syn-shaping) |
 ### Variable Details
 
 #### REDIS_ADDR
@@ -199,6 +200,7 @@ Each message on this subject is one closed round. The payload is JSON:
 - `ippool` chooses addresses from `DESIRED_SUBNET`
 - `network` rotates the interface and installs SNAT rules or direct-mode routes
 - `events` subscribes to Redis `round_finish` or a NATS round-closed subject. Both call the same reconfiguration function.
+- `shape` installs the SYN-shaping table and NFQUEUE listeners (`SYN_SHAPE=on`) and holds the watchdog (`divisor watchdog`)
 
 Build with `go build -o divisor ./cmd/divisor`.
 
@@ -294,6 +296,44 @@ To run Quotient without IP rotation, comment out or remove the divisor service f
 With `DIVISOR_MODE=direct`, Divisor expects to run in a runner's network namespace and sets the address directly on `INTERFACE_NAME`. Each runner must have its own divisor attached. Use this mode if you want to run on Kubernetes, or otherwise don't want to use the SNAT mode.
 
 Requires `net.ipv4.conf.<INTERFACE_NAME>.promote_secondaries=1`. Divisor needs an IP to ping from when ensuring an address is unused, and in direct mode there's no existing IP to rely on other than the previously used scoring IP, so we add the new IP before removing the old one.
+
+### SYN Shaping
+
+With `SYN_SHAPE=on`, the packets a check sends leave with the TCP/IP fingerprint of the operating system the check claims (its User-Agent, workstation name or client banner), not the runner's Linux one. The runner marks each socket with a DSCP value per OS when `QUOTIENT_PROFILE_MARK=dscp` is set on it: 7 Windows, 11 Linux, 15 macOS. **Set that only on runners behind a Divisor with `SYN_SHAPE=on`**, or the marks reach the teams.
+
+Divisor's `divisor_shape` nftables table (postrouting, before SNAT), for traffic to `TARGET_SUBNETS`:
+- clears the DSCP and sets the OS's TTL (128 Windows, 64 Linux and macOS, plus `SHAPE_EXTRA_HOPS`) on every packet of the flow, also on packets the runner kernel sends without the socket (via the conntrack mark). The profile DSCP values are cleared toward every other destination too;
+- sends SYNs of the Windows and macOS profiles to an NFQUEUE listener that rewrites the SYN's options into the OS's layout (Windows: `mss,nop,ws,nop,nop,sackOK`, no timestamps). Without timestamps in the SYN the server answers without them, and the client runs the whole flow without timestamps. The window scale is only ever lowered. Nothing after the SYN is rewritten, so there is no per-flow state in Divisor.
+
+Divisor sets the TTL of marked flows, overriding Quotient's `QUOTIENT_RUNNER_EXTRA_HOPS` for them (ping checks carry no mark and keep it). In SNAT mode Divisor's egress is where a real host would sit, so leave `SHAPE_EXTRA_HOPS` at 0. In direct mode the table is in the runner pod, before the node; set it to the number of routers between the pod and the scoring network.
+
+**Runner window scale:** the runner's own window scale must be at least the OS's (8 for Windows), because Divisor never raises one. Give runner containers `net.ipv4.tcp_rmem = 4096 131072 8388608` (a per-network-namespace sysctl: compose `sysctls:`, or a Kubernetes pod `securityContext.sysctls` entry, which needs the kubelet to allow it). With Linux's default 6 MiB maximum, Windows SYNs keep scale 7. With the 8 MiB maximum, sockets without a profile clamp (custom checks) announce scale 8.
+
+**Failure behaviour:** if no listener is bound, or its queue or socket buffer is full, the kernel passes SYNs unmodified (`queue ... bypass`, fail-open). Connections still work, and the runner's own fingerprint shows. The TTL and DSCP rules stay in place either way. Address rotation does not touch the table: it matches the DSCP mark and `TARGET_SUBNETS`, not the rotated SNAT addresses.
+
+A listener that is bound but **not answering** (Divisor frozen or hung) is not covered by the kernel's fail-open: its SYNs wait in the queue, and the checks that sent them time out. Run the watchdog, `divisor watchdog`, as its own container (SNAT mode: `network_mode: host`, `cap_add: [NET_ADMIN]`) or as a pod sidecar (direct mode), so that it keeps running when Divisor is frozen.
+- It reads `/proc/net/netfilter/nfnetlink_queue` every 50 ms.
+- When the Windows/macOS queues have been non-empty at every sample for `SHAPE_WATCHDOG_THRESHOLD` (default `500ms`), it empties the table's `synopts` chain, so new SYNs leave unshaped.
+- It puts the queue rules back once the queues have been empty that long.
+- The chain is the bypass state, so a watchdog that restarts mid-bypass still restores.
+- The chain is also re-read during a stall, so a Divisor restart that reinstalls the queue rules is bypassed again.
+- It touches only that chain. It writes its trips and state to `/run/divisor/watchdog.json`; mount the same directory in Divisor. It reads `.env` like Divisor.
+
+**Counters:** at every rotation Divisor logs `SYN shaping counters`:
+- `shaped` and `passed_through`: SYNs rewritten or left unmodified since Divisor started;
+- `verdict_errors`;
+- `kernel_queued`: SYNs the kernel queued;
+- `failed_open`: queued SYNs that never reached the listener because its socket buffer was full, so they left unshaped. A full queue (65536 SYNs) fails open before queueing and is not counted;
+- `watchdog_trips` and `watchdog_bypassed`.
+
+It warns when the watchdog's state is missing or stale.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SHAPE_EXTRA_HOPS` | `0` | Added to each profile's TTL (0–64) |
+| `SHAPE_WATCHDOG_THRESHOLD` | `500ms` | How long the shaping queues may stay non-empty before the watchdog bypasses shaping (watchdog) |
+
+Needs `nft` in the image and the `nfnetlink_queue` kernel module.
 
 ---
 
