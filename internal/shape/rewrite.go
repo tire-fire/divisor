@@ -91,6 +91,9 @@ func RewriteSYN(pkt []byte, p Profile) ([]byte, error) {
 	ntcp := out[ipHdrLen:]
 	ntcp[12] = byte((20+len(opts))/4)<<4 | ntcp[12]&0x0f
 	ntcp[16], ntcp[17] = 0, 0
+	if in.hasMSS {
+		binary.BigEndian.PutUint16(ntcp[14:16], synWindow(binary.BigEndian.Uint16(ntcp[14:16]), in.mss, p.SYNWindow))
+	}
 
 	if out[0]>>4 == 4 {
 		binary.BigEndian.PutUint16(out[2:4], uint16(len(out)))
@@ -110,6 +113,24 @@ func RewriteSYN(pkt []byte, p Profile) ([]byte, error) {
 		binary.BigEndian.PutUint16(ntcp[16:18], checksum(ntcp, sum(pseudo[:])))
 	}
 	return out, nil
+}
+
+// synWindow is the window field the SYN leaves with. A SYN's window is not
+// scaled, and it only bounds what the server may send before the client's
+// handshake ACK, which carries the real, scaled window. Linux announces its
+// receive space rounded down to a multiple of the MSS, capped at 65535; the
+// runner's real space is then within one MSS above what it announced. So the
+// profile's window replaces the runner's only when it is higher by less than
+// one MSS (64240 -> 65535 with MSS 1460): an over-statement of under one
+// segment for less than a round trip, while the server's initial congestion
+// window (10 segments) is far below either value. Anything else is kept: a
+// runner window already at the profile's, a smaller buffer, or a SYN from a
+// non-Linux stack.
+func synWindow(runner, mss, profile uint16) uint16 {
+	if profile == 0 || runner >= profile || mss == 0 || uint32(runner)+uint32(mss) <= uint32(profile) {
+		return runner
+	}
+	return profile
 }
 
 func parseSYNOptions(b []byte) (synOptions, error) {

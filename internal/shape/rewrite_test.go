@@ -192,3 +192,31 @@ func TestRulesetRejectsBadTargets(t *testing.T) {
 		t.Error("a table that shapes nothing accepted")
 	}
 }
+
+func TestRewriteSYNMacOSWindow(t *testing.T) {
+	for runner, want := range map[uint16]uint16{
+		64240: 65535, // Linux's 65536-byte space rounded down to MSS 1460
+		65535: 65535, // runner already sends macOS's window (SO_RCVBUF)
+		62780: 62780, // more than one MSS below: a smaller real buffer, keep
+		29200: 29200,
+	} {
+		tcp := tcpHeader(0x02, linuxSYNOptions(7))
+		binary.BigEndian.PutUint16(tcp[14:], runner)
+		out, err := RewriteSYN(ipv4Packet(tcp), profile("macos"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		validV4(t, out)
+		if got := binary.BigEndian.Uint16(out[34:]); got != want {
+			t.Errorf("runner window %d left as %d, want %d", runner, got, want)
+		}
+	}
+	// Windows 10/11 send 64240 themselves: never raised.
+	out, err := RewriteSYN(ipv4Packet(tcpHeader(0x02, linuxSYNOptions(8))), profile("windows"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := binary.BigEndian.Uint16(out[34:]); got != 64240 {
+		t.Errorf("Windows SYN window %d, want the runner's 64240", got)
+	}
+}

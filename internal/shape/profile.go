@@ -47,6 +47,11 @@ type Profile struct {
 	Layout []byte
 	// MaxScale is the window scale announced: min(real, MaxScale).
 	MaxScale uint8
+	// SYNWindow, when set, is the OS's SYN window. It replaces the runner's
+	// only where the runner's is Linux's rounding of the same receive space:
+	// Linux writes the space rounded down to a multiple of the MSS (64240 for
+	// MSS 1460) where macOS writes 65535. See synWindow.
+	SYNWindow uint16
 }
 
 // Profiles are the OSes Quotient's checks claim. The layouts are what real
@@ -58,7 +63,7 @@ var Profiles = []Profile{
 		Layout: []byte{optMSS, optNOP, optWS, optNOP, optNOP, optSACK}, MaxScale: 8},
 	{Name: "linux", DSCP: 11, TTL: 64, Mark: 0xd11},
 	{Name: "macos", DSCP: 15, TTL: 64, Mark: 0xd15, Queue: 15,
-		Layout: []byte{optMSS, optNOP, optWS, optNOP, optNOP, optTS, optSACK, optEOL}, MaxScale: 6},
+		Layout: []byte{optMSS, optNOP, optWS, optNOP, optNOP, optTS, optSACK, optEOL}, MaxScale: 6, SYNWindow: 65535},
 }
 
 // ByQueue returns the profile whose SYNs arrive on queue q.
